@@ -1,0 +1,15 @@
+# Which packages each tenant tracks. Chapter 12's own scheduled sync
+# reads this file, not a hardcoded list, so adding a tenant or a
+# package is a config change, not a code change. A real tenant
+# directory (who exists, who owns which packages) is a product
+# decision for a later chapter; this is deliberately just enough to
+# prove the pipeline runs unattended, on a real schedule, against
+# real data.
+
+acme:
+  - requests
+  - httpx
+  - urllib3
+
+globex:
+  - fastapi

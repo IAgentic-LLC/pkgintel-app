@@ -6,5 +6,22 @@ services:
     volumes:
       - qdrant-data:/qdrant/storage
 
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: pkgintel_app
+      POSTGRES_PASSWORD: pkgintel_app
+      POSTGRES_DB: pkgintel_app
+    ports:
+      # 5434, not 5432 or reorder-app's own 5433: both repos' Postgres
+      # containers can run at the same time on this machine without
+      # colliding.
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pkgintel_app"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
 volumes:
   qdrant-data:

@@ -1,0 +1,82 @@
+"""Chapter 12: chapter 11's `sync_packages` call, run by a human, once,
+by hand. This module is the same call, turned into a real, unattended,
+scheduled job, SAQ's own `CronJob`, the same queue technology chapter 9
+already introduced for reorder-app, reused rather than reaching for a
+second orchestration tool (Airflow, say) for what is really one
+scheduled function, not a multi-step DAG with cross-task dependencies.
+"""
+
+import os
+
+import yaml
+from reliable_agents_labs.ingest import sync_packages
+from reliable_agents_labs.models import build_embedding_client
+from saq import CronJob
+from saq.queue.postgres import PostgresQueue
+
+from pkgintel_app.tenant_rag import build_tenant_qdrant_client, tenant_collection_name
+
+
+def load_tenant_packages(config_path: str = "config/tenants.yaml") -> dict[str, list[str]]:
+    """Real tenant->package lists, read from config, not hardcoded.
+    Adding a tenant or a package here is what "runs on a schedule"
+    actually has to notice on its very next run, with no code change.
+    """
+    with open(config_path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _database_url() -> str:
+    return os.environ["DATABASE_URL"]
+
+
+def get_ingestion_queue() -> PostgresQueue:
+    return PostgresQueue.from_url(_database_url(), name="ingestion")
+
+
+# Every 6 hours: real package metadata doesn't change minute to minute,
+# and `sync_packages` is a real network call per package, per tenant,
+# not free to run more often than the data actually justifies.
+# Overridable via INGESTION_CRON for local verification without
+# touching this default.
+DEFAULT_CRON = "0 */6 * * *"
+
+
+async def startup(ctx: dict) -> None:
+    """Real resources, built once per worker, not once per run. Chapter
+    9's own `startup`/`ctx` pattern: a test calls `sync_all_tenants`
+    directly with a fake `qdrant`/`embedder` already in `ctx`, no real
+    worker process, no real network, ever required to test this.
+    """
+    ctx["qdrant"] = build_tenant_qdrant_client()
+    ctx["embedder"] = build_embedding_client()
+
+
+async def sync_all_tenants(ctx: dict) -> dict:
+    """The scheduled job itself. Each tenant's sync is chapter 11's own
+    `ask_rag_agent_for_tenant`'s sibling on the write side: the exact
+    same `sync_packages` a human called by hand in chapter 11, now
+    called by SAQ's own cron, once per tenant, every run.
+    """
+    qdrant = ctx["qdrant"]
+    embedder = ctx["embedder"]
+    results = {}
+    for tenant_id, names in load_tenant_packages().items():
+        results[tenant_id] = await sync_packages(
+            names, qdrant, embedder, collection_name=tenant_collection_name(tenant_id)
+        )
+    return results
+
+
+def settings() -> dict:
+    """A callable, not a module-level dict, same reason chapter 9's
+    `reorder_app.jobs.settings` already is: a value that depends on the
+    environment (`DATABASE_URL`) shouldn't be computed at import time.
+    """
+    cron = os.environ.get("INGESTION_CRON", DEFAULT_CRON)
+    return {
+        "queue": get_ingestion_queue(),
+        "functions": [sync_all_tenants],
+        "cron_jobs": [CronJob(sync_all_tenants, cron=cron)],
+        "startup": startup,
+    }

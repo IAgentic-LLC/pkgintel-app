@@ -40,7 +40,7 @@ from reliable_agents_labs.models import EmbeddingClient, ModelClient, ModelResul
 
 from pkgintel_app.auth import TenantPrincipal, register_auth_exception_handlers, verify_tenant_token
 from pkgintel_app.cost_cache import AnswerCache, PostgresAnswerCache, cache_key, ensure_tables
-from pkgintel_app.tenant_rag import ask_rag_agent_for_tenant
+from pkgintel_app.observability import ask_rag_agent_for_tenant_traced
 
 load_dotenv()
 
@@ -186,7 +186,7 @@ async def ask_question(
         cost_holder["cost_usd"] = estimate_cost(result)
 
     try:
-        rag_answer = await ask_rag_agent_for_tenant(
+        rag_answer = await ask_rag_agent_for_tenant_traced(
             principal.tenant_id,
             payload.question,
             qdrant=qdrant,

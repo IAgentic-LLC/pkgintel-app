@@ -12,13 +12,19 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from pkgintel_app import auth
-from pkgintel_app.api import app, get_embedding_client, get_model_client, get_qdrant_client
+from pkgintel_app.api import (
+    app,
+    get_answer_cache,
+    get_embedding_client,
+    get_model_client,
+    get_qdrant_client,
+)
 from pkgintel_app.tenant_rag import tenant_collection_name
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 from reliable_agents_labs.models import ModelResult
 
-from tests.fakes import FakeEmbeddingClient
+from tests.fakes import FakeEmbeddingClient, InMemoryAnswerCache
 
 _AUDIENCE = "https://pkgintel-app.dev/api"
 _ISSUER = "https://test-tenant.auth0.com/"
@@ -92,6 +98,7 @@ async def test_a_tenants_bearer_token_only_ever_reaches_its_own_collection(monke
     app.dependency_overrides[get_qdrant_client] = lambda: qdrant
     app.dependency_overrides[get_embedding_client] = lambda: FakeEmbeddingClient(_SHARED_VECTOR)
     app.dependency_overrides[get_model_client] = lambda: _EchoingModelClient()
+    app.dependency_overrides[get_answer_cache] = lambda: InMemoryAnswerCache()
     client = TestClient(app)
     try:
         acme_response = client.post(

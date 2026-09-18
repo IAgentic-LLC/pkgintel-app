@@ -52,6 +52,7 @@ async def ask_rag_agent_for_tenant(
     model_client: ModelClient | None = None,
     limit: int = 3,
     on_retrieval=None,
+    on_model_result=None,
 ) -> RagAnswer:
     """`ask_rag_agent`'s own shape, aimed at one tenant's own collection
     instead of the global default. The prompt, the response model, and
@@ -62,6 +63,12 @@ async def ask_rag_agent_for_tenant(
     same reason: proving a tenant only ever retrieves its own data
     needs to see what retrieval actually returned, not just what the
     model chose to mention.
+
+    `on_model_result`, chapter 15's own addition: the parsed `RagAnswer`
+    this function returns has already thrown away `ModelResult`'s real
+    `input_tokens`/`output_tokens`, and `reliable_agents_labs.cost`'s
+    `estimate_cost` needs exactly that, not the final text, to turn a
+    call into a real dollar figure.
     """
     qdrant = qdrant or build_tenant_qdrant_client()
     embedder = embedder or build_embedding_client()
@@ -77,5 +84,7 @@ async def ask_rag_agent_for_tenant(
     context = "\n".join(f"- {r['name']}: {r['summary']}" for r in results)
     user_prompt = f"Package information:\n{context}\n\nQuestion: {question}"
     result = await model_client.generate(system=RAG_SYSTEM_PROMPT, user=user_prompt)
+    if on_model_result is not None:
+        on_model_result(result)
     payload = parse_json_object(result.text)
     return RagAnswer.model_validate(payload)

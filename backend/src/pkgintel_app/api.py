@@ -10,22 +10,43 @@ fact about numpy, not about who's asking, so every authenticated tenant
 can ask it, over the one shared graph.
 """
 
+import asyncio
 import os
+import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import psycopg
+
+if sys.platform == "win32":
+    # Chapter 15's own real finding: this app never touched psycopg
+    # directly from the API process before now (chapter 12's cron job
+    # runs it from a separate SAQ worker process). The same real
+    # incompatibility reorder-app's own chapters 7 and 9 already found,
+    # confirmed live again here: psycopg's async mode refuses to run
+    # under Windows' default ProactorEventLoop. Has to run before
+    # uvicorn builds its own event loop, so it lives here, at module
+    # import time.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from qdrant_client import AsyncQdrantClient
+from reliable_agents_labs.cost import estimate_cost
 from reliable_agents_labs.graph_store import build_neo4j_driver, find_dependents
-from reliable_agents_labs.models import EmbeddingClient, ModelClient
+from reliable_agents_labs.models import EmbeddingClient, ModelClient, ModelResult
 
 from pkgintel_app.auth import TenantPrincipal, register_auth_exception_handlers, verify_tenant_token
+from pkgintel_app.cost_cache import AnswerCache, PostgresAnswerCache, cache_key, ensure_tables
 from pkgintel_app.tenant_rag import ask_rag_agent_for_tenant
 
 load_dotenv()
+
+
+def _database_url() -> str:
+    return os.environ["DATABASE_URL"]
 
 
 @asynccontextmanager
@@ -35,6 +56,13 @@ async def lifespan(app: FastAPI):
     # fresh connection negotiation on every single call.
     driver = build_neo4j_driver()
     app.state.neo4j_driver = driver
+
+    # Chapter 15's own cache and usage tables, same Postgres chapter 12
+    # already runs. `ensure_tables` is idempotent, safe to call on every
+    # startup, same reasoning as chapter 7's `checkpointer.setup()`.
+    async with await psycopg.AsyncConnection.connect(_database_url()) as conn:
+        await ensure_tables(conn)
+
     try:
         yield
     finally:
@@ -62,11 +90,20 @@ class QuestionRequest(BaseModel):
 class AnswerResponse(BaseModel):
     answer: str
     cited_packages: list[str]
+    cached: bool = False
+    cost_usd: float = 0.0
 
 
 class DependentsResponse(BaseModel):
     target: str
     dependents: list[str]
+
+
+class UsageResponse(BaseModel):
+    tenant_id: str
+    total_cost_usd: float
+    call_count: int
+    cache_hit_count: int
 
 
 class ProblemDetail(BaseModel):
@@ -112,14 +149,42 @@ async def get_model_client() -> ModelClient | None:
     return None
 
 
+async def get_answer_cache() -> AsyncIterator[AnswerCache]:
+    """The real Postgres implementation, opened and closed once per
+    request, same lifetime as chapter 9's own per-job connection. A test
+    overrides this with an in-memory dict-backed double instead, no real
+    Postgres, proving the caching and cost-accounting logic on its own.
+    """
+    async with await psycopg.AsyncConnection.connect(_database_url()) as conn:
+        yield PostgresAnswerCache(conn)
+
+
 @app.post("/v1/questions", response_model=AnswerResponse)
 async def ask_question(
     payload: QuestionRequest,
     qdrant: AsyncQdrantClient | None = Depends(get_qdrant_client),
     embedder: EmbeddingClient | None = Depends(get_embedding_client),
     model_client: ModelClient | None = Depends(get_model_client),
+    cache: AnswerCache = Depends(get_answer_cache),
     principal: TenantPrincipal = Depends(verify_tenant_token),
 ) -> AnswerResponse:
+    question_hash = cache_key(payload.question)
+
+    cached_answer = await cache.get(principal.tenant_id, question_hash)
+    if cached_answer is not None:
+        await cache.record_usage(principal.tenant_id, cost_usd=0.0, cache_hit=True)
+        return AnswerResponse(
+            answer=cached_answer.answer,
+            cited_packages=cached_answer.cited_packages,
+            cached=True,
+            cost_usd=0.0,
+        )
+
+    cost_holder: dict[str, float] = {}
+
+    def _capture_cost(result: ModelResult) -> None:
+        cost_holder["cost_usd"] = estimate_cost(result)
+
     try:
         rag_answer = await ask_rag_agent_for_tenant(
             principal.tenant_id,
@@ -127,10 +192,20 @@ async def ask_question(
             qdrant=qdrant,
             embedder=embedder,
             model_client=model_client,
+            on_model_result=_capture_cost,
         )
     except Exception as exc:
         raise UpstreamError(detail=str(exc)) from exc
-    return AnswerResponse(answer=rag_answer.answer, cited_packages=rag_answer.cited_packages)
+
+    cost_usd = cost_holder.get("cost_usd", 0.0)
+    await cache.put(principal.tenant_id, question_hash, rag_answer)
+    await cache.record_usage(principal.tenant_id, cost_usd=cost_usd, cache_hit=False)
+    return AnswerResponse(
+        answer=rag_answer.answer,
+        cited_packages=rag_answer.cited_packages,
+        cached=False,
+        cost_usd=cost_usd,
+    )
 
 
 @app.get("/v1/packages/{name}/dependents", response_model=DependentsResponse)
@@ -144,3 +219,12 @@ async def get_dependents(
     except Exception as exc:
         raise UpstreamError(detail=str(exc)) from exc
     return DependentsResponse(target=name, dependents=dependents)
+
+
+@app.get("/v1/usage", response_model=UsageResponse)
+async def get_usage(
+    cache: AnswerCache = Depends(get_answer_cache),
+    principal: TenantPrincipal = Depends(verify_tenant_token),
+) -> UsageResponse:
+    record = await cache.get_usage(principal.tenant_id)
+    return UsageResponse(**record.model_dump())

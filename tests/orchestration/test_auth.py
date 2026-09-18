@@ -13,13 +13,19 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from pkgintel_app import auth
-from pkgintel_app.api import app, get_embedding_client, get_model_client, get_qdrant_client
+from pkgintel_app.api import (
+    app,
+    get_answer_cache,
+    get_embedding_client,
+    get_model_client,
+    get_qdrant_client,
+)
 from pkgintel_app.tenant_rag import tenant_collection_name
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams
 from reliable_agents_labs.models import ModelResult
 
-from tests.fakes import FakeEmbeddingClient, ScriptedModelClient
+from tests.fakes import FakeEmbeddingClient, InMemoryAnswerCache, ScriptedModelClient
 
 _TEST_AUDIENCE = "https://pkgintel-app.dev/api"
 _TEST_ISSUER = "https://test-tenant.auth0.com/"
@@ -87,6 +93,7 @@ def _client_with_scripted_answer():
         )
     )
     app.dependency_overrides[get_qdrant_client] = lambda: qdrant
+    app.dependency_overrides[get_answer_cache] = lambda: InMemoryAnswerCache()
     return TestClient(app)
 
 

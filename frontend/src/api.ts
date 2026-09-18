@@ -3,11 +3,20 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 export interface AnswerResponse {
   answer: string
   cited_packages: string[]
+  cached: boolean
+  cost_usd: number
 }
 
 export interface DependentsResponse {
   target: string
   dependents: string[]
+}
+
+export interface UsageResponse {
+  tenant_id: string
+  total_cost_usd: number
+  call_count: number
+  cache_hit_count: number
 }
 
 export interface ProblemDetail {
@@ -54,4 +63,8 @@ export function getDependents(token: string, packageName: string): Promise<Depen
     `/v1/packages/${encodeURIComponent(packageName)}/dependents`,
     token,
   )
+}
+
+export function getUsage(token: string): Promise<UsageResponse> {
+  return withAuth<UsageResponse>('/v1/usage', token)
 }

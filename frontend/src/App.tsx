@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import { useAuth0 } from '@auth0/auth0-react'
-import { ApiError, askQuestion, getDependents } from './api'
+import { ApiError, askQuestion, getDependents, getUsage, type UsageResponse } from './api'
 
 const ACME_ORG_ID = import.meta.env.VITE_AUTH0_ACME_ORG_ID
 const GLOBEX_ORG_ID = import.meta.env.VITE_AUTH0_GLOBEX_ORG_ID
@@ -55,12 +55,14 @@ function Header() {
   )
 }
 
-function QuestionForm() {
+function QuestionForm({ onUsage }: { onUsage: (usage: UsageResponse) => void }) {
   const { getAccessTokenSilently } = useAuth0()
   const [question, setQuestion] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [answer, setAnswer] = useState<{ answer: string; citedPackages: string[] } | null>(null)
+  const [answer, setAnswer] = useState<
+    { answer: string; citedPackages: string[]; cached: boolean; costUsd: number } | null
+  >(null)
 
   const handleSubmit = useCallback(
     async (event: React.FormEvent) => {
@@ -74,14 +76,22 @@ function QuestionForm() {
         const token = await getAccessTokenSilently()
         if (!token) throw new Error('No access token available.')
         const result = await askQuestion(token, question.trim())
-        setAnswer({ answer: result.answer, citedPackages: result.cited_packages })
+        setAnswer({
+          answer: result.answer,
+          citedPackages: result.cited_packages,
+          cached: result.cached,
+          costUsd: result.cost_usd,
+        })
+        // A cache hit or miss both change this tenant's own usage
+        // ledger (chapter 15), a hit just adds a zero-cost call to it.
+        onUsage(await getUsage(token))
       } catch (err) {
         setError(err instanceof ApiError ? err.problem.detail : 'The question could not be sent.')
       } finally {
         setSubmitting(false)
       }
     },
-    [question, getAccessTokenSilently],
+    [question, getAccessTokenSilently, onUsage],
   )
 
   return (
@@ -108,9 +118,29 @@ function QuestionForm() {
           {answer.citedPackages.length > 0 && (
             <p className="thread-id">Cited: {answer.citedPackages.join(', ')}</p>
           )}
+          <p className="thread-id">
+            {answer.cached
+              ? 'Served from cache, $0.0000'
+              : `Real model call, $${answer.costUsd.toFixed(6)}`}
+          </p>
         </div>
       )}
     </form>
+  )
+}
+
+function UsagePanel({ usage }: { usage: UsageResponse | null }) {
+  if (usage === null) return null
+  return (
+    <div className="card queue-item">
+      <div className="queue-item-top">
+        <div className="queue-question">This tenant's usage</div>
+        <span className="badge badge-no_action">
+          {usage.cache_hit_count}/{usage.call_count} cached
+        </span>
+      </div>
+      <p className="queue-answer">Total real spend so far: ${usage.total_cost_usd.toFixed(6)}</p>
+    </div>
   )
 }
 
@@ -175,13 +205,16 @@ function DependentsLookup() {
 }
 
 function Dashboard() {
+  const [usage, setUsage] = useState<UsageResponse | null>(null)
+
   return (
     <main className="main">
       <div className="page-heading">
         <h1>Package intelligence</h1>
         <p>Questions reach only your own tenant's collection. The dependency graph is shared.</p>
       </div>
-      <QuestionForm />
+      <QuestionForm onUsage={setUsage} />
+      <UsagePanel usage={usage} />
       <DependentsLookup />
     </main>
   )

@@ -39,7 +39,7 @@ from reliable_agents_labs.graph_store import build_neo4j_driver, find_dependents
 from reliable_agents_labs.models import EmbeddingClient, ModelClient, ModelResult
 
 from pkgintel_app.auth import TenantPrincipal, register_auth_exception_handlers, verify_tenant_token
-from pkgintel_app.cost_cache import AnswerCache, PostgresAnswerCache, cache_key, ensure_tables
+from pkgintel_app.cost_cache import AnswerCache, PostgresAnswerCache, cache_key
 from pkgintel_app.observability import ask_rag_agent_for_tenant_traced
 
 load_dotenv()
@@ -57,12 +57,11 @@ async def lifespan(app: FastAPI):
     driver = build_neo4j_driver()
     app.state.neo4j_driver = driver
 
-    # Chapter 15's own cache and usage tables, same Postgres chapter 12
-    # already runs. `ensure_tables` is idempotent, safe to call on every
-    # startup, same reasoning as chapter 7's `checkpointer.setup()`.
-    async with await psycopg.AsyncConnection.connect(_database_url()) as conn:
-        await ensure_tables(conn)
-
+    # Chapter 17: schema is no longer created here. Migrations are
+    # their own explicit deploy step (`scripts/migrate.py`), run once,
+    # before this app starts taking traffic, not implicitly, by
+    # whichever one of potentially several replicas happens to boot
+    # first and race the others to run the identical DDL.
     try:
         yield
     finally:
@@ -92,6 +91,7 @@ class AnswerResponse(BaseModel):
     cited_packages: list[str]
     cached: bool = False
     cost_usd: float = 0.0
+    model_id: str | None = None
 
 
 class DependentsResponse(BaseModel):
@@ -178,12 +178,13 @@ async def ask_question(
             cited_packages=cached_answer.cited_packages,
             cached=True,
             cost_usd=0.0,
+            model_id=cached_answer.model_id,
         )
 
-    cost_holder: dict[str, float] = {}
+    result_holder: dict[str, ModelResult] = {}
 
-    def _capture_cost(result: ModelResult) -> None:
-        cost_holder["cost_usd"] = estimate_cost(result)
+    def _capture_result(result: ModelResult) -> None:
+        result_holder["result"] = result
 
     try:
         rag_answer = await ask_rag_agent_for_tenant_traced(
@@ -192,19 +193,22 @@ async def ask_question(
             qdrant=qdrant,
             embedder=embedder,
             model_client=model_client,
-            on_model_result=_capture_cost,
+            on_model_result=_capture_result,
         )
     except Exception as exc:
         raise UpstreamError(detail=str(exc)) from exc
 
-    cost_usd = cost_holder.get("cost_usd", 0.0)
-    await cache.put(principal.tenant_id, question_hash, rag_answer)
+    model_result = result_holder.get("result")
+    cost_usd = estimate_cost(model_result) if model_result else 0.0
+    model_id = model_result.model_id if model_result else None
+    await cache.put(principal.tenant_id, question_hash, rag_answer, model_id=model_id)
     await cache.record_usage(principal.tenant_id, cost_usd=cost_usd, cache_hit=False)
     return AnswerResponse(
         answer=rag_answer.answer,
         cited_packages=rag_answer.cited_packages,
         cached=False,
         cost_usd=cost_usd,
+        model_id=model_id,
     )
 
 

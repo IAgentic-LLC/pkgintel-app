@@ -18,6 +18,11 @@ Cost is tracked for generation only, via `reliable_agents_labs.cost`'s
 cost too, but `EmbeddingClient.embed()` returns a bare vector, no
 token usage at all, so there is nothing here to measure it with. The
 dollar figures below are real, just not the whole bill.
+
+Chapter 17: the table and column shapes below are no longer defined
+here at all. `migrations/` is the one real source of truth for this
+app's schema now; this module only ever reads and writes rows within
+whatever shape the applied migrations have actually left behind.
 """
 
 import hashlib
@@ -26,23 +31,6 @@ from typing import Protocol
 import psycopg
 from pydantic import BaseModel
 from reliable_agents_labs.rag_agent import RagAnswer
-
-CREATE_TABLES_SQL = """
-CREATE TABLE IF NOT EXISTS answer_cache (
-    tenant_id TEXT NOT NULL,
-    question_hash TEXT NOT NULL,
-    answer TEXT NOT NULL,
-    cited_packages TEXT[] NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (tenant_id, question_hash)
-);
-CREATE TABLE IF NOT EXISTS tenant_usage (
-    tenant_id TEXT PRIMARY KEY,
-    total_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
-    call_count INTEGER NOT NULL DEFAULT 0,
-    cache_hit_count INTEGER NOT NULL DEFAULT 0
-);
-"""
 
 # Shorter than chapter 12's own 6-hour ingestion cadence, on purpose: a
 # cached answer can never outlive more than one ingestion cycle's worth
@@ -55,17 +43,18 @@ def cache_key(question: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-async def ensure_tables(conn: psycopg.AsyncConnection) -> None:
-    await conn.execute(CREATE_TABLES_SQL)
-    await conn.commit()
+class CachedAnswer(BaseModel):
+    answer: str
+    cited_packages: list[str]
+    model_id: str | None = None
 
 
 async def get_cached_answer(
     conn: psycopg.AsyncConnection, tenant_id: str, question_hash: str
-) -> RagAnswer | None:
+) -> CachedAnswer | None:
     async with conn.cursor() as cur:
         await cur.execute(
-            "SELECT answer, cited_packages FROM answer_cache "
+            "SELECT answer, cited_packages, model_id FROM answer_cache "
             "WHERE tenant_id = %s AND question_hash = %s "
             "AND created_at > now() - make_interval(secs => %s)",
             (tenant_id, question_hash, CACHE_TTL_SECONDS),
@@ -73,22 +62,45 @@ async def get_cached_answer(
         row = await cur.fetchone()
     if row is None:
         return None
-    return RagAnswer(answer=row[0], cited_packages=row[1])
+    return CachedAnswer(answer=row[0], cited_packages=row[1], model_id=row[2])
 
 
 async def store_answer(
-    conn: psycopg.AsyncConnection, tenant_id: str, question_hash: str, answer: RagAnswer
+    conn: psycopg.AsyncConnection,
+    tenant_id: str,
+    question_hash: str,
+    answer: RagAnswer,
+    model_id: str | None = None,
 ) -> None:
     async with conn.cursor() as cur:
         await cur.execute(
-            "INSERT INTO answer_cache (tenant_id, question_hash, answer, cited_packages) "
-            "VALUES (%s, %s, %s, %s) "
+            "INSERT INTO answer_cache (tenant_id, question_hash, answer, cited_packages, model_id) "
+            "VALUES (%s, %s, %s, %s, %s) "
             "ON CONFLICT (tenant_id, question_hash) "
             "DO UPDATE SET answer = EXCLUDED.answer, "
-            "cited_packages = EXCLUDED.cited_packages, created_at = now()",
-            (tenant_id, question_hash, answer.answer, answer.cited_packages),
+            "cited_packages = EXCLUDED.cited_packages, model_id = EXCLUDED.model_id, "
+            "created_at = now()",
+            (tenant_id, question_hash, answer.answer, answer.cited_packages, model_id),
         )
     await conn.commit()
+
+
+async def purge_stale_entries(
+    conn: psycopg.AsyncConnection, older_than_seconds: int = CACHE_TTL_SECONDS
+) -> int:
+    """Chapter 17's own real reason `idx_answer_cache_created_at` exists:
+    a cache that only ever grows is not actually a cache, it's a leak.
+    This is the query the new index is for, real `EXPLAIN` output
+    proving it (chapter 17's own migration 0003) rather than assumed.
+    """
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "DELETE FROM answer_cache WHERE created_at < now() - make_interval(secs => %s)",
+            (older_than_seconds,),
+        )
+        deleted = cur.rowcount
+    await conn.commit()
+    return deleted
 
 
 async def record_usage(
@@ -139,8 +151,10 @@ class AnswerCache(Protocol):
     proven against a real database at integration tier.
     """
 
-    async def get(self, tenant_id: str, question_hash: str) -> RagAnswer | None: ...
-    async def put(self, tenant_id: str, question_hash: str, answer: RagAnswer) -> None: ...
+    async def get(self, tenant_id: str, question_hash: str) -> CachedAnswer | None: ...
+    async def put(
+        self, tenant_id: str, question_hash: str, answer: RagAnswer, model_id: str | None = None
+    ) -> None: ...
     async def record_usage(self, tenant_id: str, cost_usd: float, cache_hit: bool) -> None: ...
     async def get_usage(self, tenant_id: str) -> UsageRecord: ...
 
@@ -149,11 +163,13 @@ class PostgresAnswerCache:
     def __init__(self, conn: psycopg.AsyncConnection) -> None:
         self._conn = conn
 
-    async def get(self, tenant_id: str, question_hash: str) -> RagAnswer | None:
+    async def get(self, tenant_id: str, question_hash: str) -> CachedAnswer | None:
         return await get_cached_answer(self._conn, tenant_id, question_hash)
 
-    async def put(self, tenant_id: str, question_hash: str, answer: RagAnswer) -> None:
-        await store_answer(self._conn, tenant_id, question_hash, answer)
+    async def put(
+        self, tenant_id: str, question_hash: str, answer: RagAnswer, model_id: str | None = None
+    ) -> None:
+        await store_answer(self._conn, tenant_id, question_hash, answer, model_id=model_id)
 
     async def record_usage(self, tenant_id: str, cost_usd: float, cache_hit: bool) -> None:
         await record_usage(self._conn, tenant_id, cost_usd, cache_hit)

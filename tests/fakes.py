@@ -4,7 +4,7 @@ this series: test doubles live under `tests/` there and are not part
 of the installed package.
 """
 
-from pkgintel_app.cost_cache import UsageRecord
+from pkgintel_app.cost_cache import CachedAnswer, UsageRecord
 from reliable_agents_labs.models import ModelResult
 from reliable_agents_labs.rag_agent import RagAnswer
 
@@ -53,14 +53,18 @@ class InMemoryAnswerCache:
     """
 
     def __init__(self) -> None:
-        self._answers: dict[tuple[str, str], RagAnswer] = {}
+        self._answers: dict[tuple[str, str], CachedAnswer] = {}
         self._usage: dict[str, UsageRecord] = {}
 
-    async def get(self, tenant_id: str, question_hash: str) -> RagAnswer | None:
+    async def get(self, tenant_id: str, question_hash: str) -> CachedAnswer | None:
         return self._answers.get((tenant_id, question_hash))
 
-    async def put(self, tenant_id: str, question_hash: str, answer: RagAnswer) -> None:
-        self._answers[(tenant_id, question_hash)] = answer
+    async def put(
+        self, tenant_id: str, question_hash: str, answer: RagAnswer, model_id: str | None = None
+    ) -> None:
+        self._answers[(tenant_id, question_hash)] = CachedAnswer(
+            answer=answer.answer, cited_packages=answer.cited_packages, model_id=model_id
+        )
 
     async def record_usage(self, tenant_id: str, cost_usd: float, cache_hit: bool) -> None:
         existing = self._usage.get(tenant_id) or UsageRecord(

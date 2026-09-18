@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+_book/
+*.typ
+.env
+.pytest_cache/

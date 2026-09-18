@@ -1,0 +1,5 @@
+neo4j>=6.3.0
+qdrant-client>=1.19.0
+pyyaml>=6.0.3
+openai
+python-dotenv>=1.2.3

@@ -8,22 +8,13 @@ scheduled function, not a multi-step DAG with cross-task dependencies.
 
 import os
 
-import yaml
 from reliable_agents_labs.ingest import sync_packages
 from reliable_agents_labs.models import build_embedding_client
 from saq import CronJob
 from saq.queue.postgres import PostgresQueue
 
 from pkgintel_app.tenant_rag import build_tenant_qdrant_client, tenant_collection_name
-
-
-def load_tenant_packages(config_path: str = "config/tenants.yaml") -> dict[str, list[str]]:
-    """Real tenant->package lists, read from config, not hardcoded.
-    Adding a tenant or a package here is what "runs on a schedule"
-    actually has to notice on its very next run, with no code change.
-    """
-    with open(config_path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+from pkgintel_app.tenant_registry import load_tenant_packages
 
 
 def _database_url() -> str:

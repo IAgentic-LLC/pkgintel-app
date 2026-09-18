@@ -23,5 +23,19 @@ services:
       timeout: 5s
       retries: 10
 
+  neo4j:
+    image: neo4j:2026.08.1
+    environment:
+      NEO4J_AUTH: neo4j/reliable-agents-labs
+    ports:
+      # 7688/7475, not Neo4j's default 7687/7474: reliable-agents-labs'
+      # own graph_store.py already defaults to bolt://localhost:7688,
+      # the exact same remapping reasoning as Postgres above.
+      - "7688:7687"
+      - "7475:7474"
+    volumes:
+      - neo4j-data:/data
+
 volumes:
   qdrant-data:
+  neo4j-data:

@@ -6,3 +6,4 @@ _book/
 *.typ
 .env
 .pytest_cache/
+airflow/logs/

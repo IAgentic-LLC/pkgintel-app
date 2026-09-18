@@ -1,0 +1,109 @@
+# Chapter 13: a deliberately trimmed Airflow, LocalExecutor, no
+# Celery, no Redis, no separate worker. Airflow 3.x still needs its
+# own Postgres, scheduler, DAG processor, and API server, even at this
+# size, real minimums this chapter found live, not assumed from a
+# smaller, out-of-date tutorial.
+
+x-airflow-common:
+  &airflow-common
+  build: .
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    # LocalExecutor's own default (32) forks that many worker
+    # processes regardless of how many tasks are actually queued,
+    # confirmed live: it starved this machine's resources hard enough
+    # to crash unrelated containers and fail task forks outright. Four
+    # is plenty for the handful of tasks this DAG ever runs at once.
+    AIRFLOW__CORE__PARALLELISM: "4"
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "4"
+    # Airflow 3's real architecture change (AIP-72): each task process
+    # calls back to the API server over HTTP instead of touching the
+    # database directly. The default points at "localhost", which
+    # inside the scheduler's own container is the scheduler itself,
+    # not the separate api-server container, confirmed live by every
+    # task failing with "Connection refused" before this was set.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+    # Without an explicit shared secret, every component generates its
+    # own random JWT signing key at startup, so the scheduler's token
+    # is meaningless to the api-server that has to verify it,
+    # confirmed live: "Invalid auth token" on every task, only fixed
+    # once every container shares the same one.
+    AIRFLOW__API_AUTH__JWT_SECRET: "Pmgn9eTZRFh5FchtiAZVg-61wncslR_DBRITKMd-V30"
+    AIRFLOW__CORE__FERNET_KEY: "K3h25pLWVz_7fU7UjF_W6GpG0i5uCSXrHAz5BDpDQhc="
+    # Where this app's own code and config live inside every Airflow
+    # container, mounted below, not pip-installed: this is
+    # pkgintel-app's own source, not a third-party dependency.
+    PYTHONPATH: /opt/pkgintel_app/src
+    # Airflow's containers reach the host's own Qdrant/Neo4j (chapter
+    # 11's compose.yaml, a separate compose project) through Docker
+    # Desktop's host gateway, "localhost" inside a container means the
+    # container itself, not this machine.
+    QDRANT_URL: http://host.docker.internal:6333
+    NEO4J_URI: bolt://host.docker.internal:7688
+    NEO4J_PASSWORD: reliable-agents-labs
+  env_file:
+    - ../.env
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ../backend/src:/opt/pkgintel_app/src
+    - ../config:/opt/airflow/config:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    volumes:
+      # Postgres 18's image expects a single mount at
+      # /var/lib/postgresql (major-version-specific subdirectories
+      # underneath), not the old .../data convention, confirmed live
+      # by the container refusing to start with the old path.
+      - airflow-postgres-data:/var/lib/postgresql
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command: ["-c", "airflow db migrate"]
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8090:8080"
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  airflow-postgres-data:

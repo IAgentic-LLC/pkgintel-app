@@ -4,14 +4,14 @@ Full-stack product: the package dependency intelligence assistant, hardened. Con
 
 Companion product code for *Production AI Products* (Book 3 of the "Production AI Agent Engineering" series). Every chapter has a matching git tag here, real, tested, runnable code, not illustrative snippets.
 
-**Status: Phase 2 scaffold.** Directory structure, dependency manifest, CI, and the five-tier testing taxonomy are wired and passing. Real product logic starts in Phase 4.
+**Status: chapter 11 complete** (tag `ch11-end`). Multi-tenant retrieval over a real Qdrant vector store, one collection per tenant, proven isolated with real PyPI package data.
 
 ## Repository shape
 
 ```
 backend/src/pkgintel_app/   application code
 frontend/                    React frontend
-workers/                     Arq background workers
+workers/                     SAQ background workers
 tests/{unit,orchestration,integration,contract,evals}/
 config/
 docs/diagrams/

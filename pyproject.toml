@@ -19,9 +19,13 @@ dependencies = [
     "python-dotenv>=1.2.3",
     "pyyaml>=6.0.3",
     "qdrant-client>=1.19.0",
+    "reliable-agents-labs",
     "tenacity>=9.1.4",
     "uvicorn[standard]>=0.53.0",
 ]
+
+[tool.uv.sources]
+reliable-agents-labs = { git = "https://github.com/Sebuliba-Adrian/reliable-agents-labs.git" }
 
 [tool.uv]
 package = true

@@ -1,0 +1,16 @@
+# Same reproducibility contract as reorder-app's own config/models.yaml:
+# model IDs live here, not hardcoded in source, and this file has to
+# exist here even though build_model_client/build_embedding_client live
+# in reliable-agents-labs, config travels with the process, not the
+# import (chapter 5's lesson, still true a repo later).
+
+answer_model:
+  provider: gemini
+  model_id: gemini-3.6-flash
+  # Anthropic alternative:
+  # provider: anthropic
+  # model_id: claude-sonnet-5
+
+embedding_model:
+  provider: gemini
+  model_id: gemini-embedding-001

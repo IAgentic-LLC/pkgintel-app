@@ -4,8 +4,19 @@ scheduled job, SAQ's own `CronJob`, the same queue technology chapter 9
 already introduced for reorder-app, reused rather than reaching for a
 second orchestration tool (Airflow, say) for what is really one
 scheduled function, not a multi-step DAG with cross-task dependencies.
+
+Chapter 33: a real, previously-unexamined blast-radius bug lived here
+since chapter 12. `sync_packages` already returns a summary instead of
+raising for a bad *package* name (`ingest_all`'s own per-package try),
+but nothing ever caught a failure at the *tenant* level, a real Qdrant
+error specific to one tenant's own collection, say. One tenant's own
+failure would propagate straight out of this function's own `for`
+loop, skipping every tenant listed after it in that same run. Fixed by
+scoping the try/except to each tenant, the same real "blast radius"
+principle chapter 33's own diagram names directly.
 """
 
+import logging
 import os
 
 from reliable_agents_labs.ingest import sync_packages
@@ -15,6 +26,8 @@ from saq.queue.postgres import PostgresQueue
 
 from pkgintel_app.tenant_rag import build_tenant_qdrant_client, tenant_collection_name
 from pkgintel_app.tenant_registry import load_tenant_packages
+
+logger = logging.getLogger(__name__)
 
 
 def _database_url() -> str:
@@ -48,14 +61,25 @@ async def sync_all_tenants(ctx: dict) -> dict:
     `ask_rag_agent_for_tenant`'s sibling on the write side: the exact
     same `sync_packages` a human called by hand in chapter 11, now
     called by SAQ's own cron, once per tenant, every run.
+
+    Chapter 33: each tenant's own real failure is caught and recorded
+    here, never allowed to reach this function's own caller and cancel
+    every tenant still left in `load_tenant_packages()`'s own
+    iteration order. A `{"error": ...}` entry in the returned dict is
+    this run's own real, honest record of which tenant failed and why,
+    not a silently skipped tenant with no trace left behind.
     """
     qdrant = ctx["qdrant"]
     embedder = ctx["embedder"]
     results = {}
     for tenant_id, names in load_tenant_packages().items():
-        results[tenant_id] = await sync_packages(
-            names, qdrant, embedder, collection_name=tenant_collection_name(tenant_id)
-        )
+        try:
+            results[tenant_id] = await sync_packages(
+                names, qdrant, embedder, collection_name=tenant_collection_name(tenant_id)
+            )
+        except Exception as exc:
+            logger.exception("Sync failed for tenant %r, continuing to the next one", tenant_id)
+            results[tenant_id] = {"error": str(exc)}
     return results
 
 

@@ -5,6 +5,7 @@ contract tier, `tests/contract/test_auth_live.py`), everything behind
 it real.
 """
 
+import asyncio
 import os
 import time
 
@@ -14,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from pkgintel_app import auth
 from pkgintel_app.api import app
+from reliable_agents_labs.graph_store import build_neo4j_driver, create_depends_on
 
 pytestmark = pytest.mark.skipif(
     not (os.environ.get("QDRANT_URL") and os.environ.get("NEO4J_URI")),
@@ -59,11 +61,27 @@ def _client(monkeypatch) -> TestClient:
     return TestClient(app)
 
 
-def test_the_dependents_endpoint_answers_from_the_real_shared_graph(monkeypatch):
-    """Chapter 13's own DAG run already wrote real `DEPENDS_ON` edges into
-    Neo4j, `certifi` included. This endpoint should surface exactly what
-    that graph actually holds, not a value asserted into a test fixture.
+def _seed_edge(dependent: str, dependency: str) -> None:
+    """Write one real edge into the real graph. `MERGE` makes it safe to
+    repeat, so the test does not depend on what an earlier run left behind.
     """
+
+    async def write() -> None:
+        driver = build_neo4j_driver()
+        try:
+            await create_depends_on(driver, dependent, dependency)
+        finally:
+            await driver.close()
+
+    asyncio.run(write())
+
+
+def test_the_dependents_endpoint_answers_from_the_real_shared_graph(monkeypatch):
+    """Seed one real `DEPENDS_ON` edge into Neo4j, then ask the endpoint
+    who depends on `certifi`. The answer has to come from the graph, not
+    from a value asserted into a test fixture.
+    """
+    _seed_edge("httpx", "certifi")
     # `with`, not a bare `TestClient(app)`: this endpoint reads
     # `app.state.neo4j_driver`, which only exists once the app's own
     # lifespan has actually run, entering the context manager is what
